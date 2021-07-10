@@ -1,0 +1,1 @@
+ffmpeg -stream_loop -1 -re -i /mnt/testnfs/ev200_dev/stream_ch0.mp4 -vcodec rawvideo -threads 0 -f v4l2 /dev/video0

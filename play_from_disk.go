@@ -1,4 +1,4 @@
-package play_from_disk
+package main
 
 import (
 	"context"
@@ -8,15 +8,17 @@ import (
 	"time"
 
 	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/examples/internal/signal"
+	"example.com/signal"
 	"github.com/pion/webrtc/v3/pkg/media"
-	"github.com/pion/webrtc/v3/pkg/media/ivfreader"
+	// "github.com/pion/webrtc/v3/pkg/media/ivfreader"
 	"github.com/pion/webrtc/v3/pkg/media/oggreader"
+	"github.com/pion/webrtc/v3/pkg/media/h264reader"
 )
 
 const (
 	audioFileName = "output.ogg"
-	videoFileName = "output.ivf"
+	// videoFileName = "output.ivf"
+	videoFileName = "stream_chn1.h264"
 )
 
 func main() {
@@ -46,7 +48,7 @@ func main() {
 
 	if haveVideoFile {
 		// Create a video track
-		videoTrack, videoTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: "video/vp8"}, "video", "pion")
+		videoTrack, videoTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "pion")
 		if videoTrackErr != nil {
 			panic(videoTrackErr)
 		}
@@ -75,7 +77,8 @@ func main() {
 				panic(ivfErr)
 			}
 
-			ivf, header, ivfErr := ivfreader.NewWith(file)
+			// ivf, header, ivfErr := ivfreader.NewWith(file)
+			ivf, ivfErr := h264reader.NewReader(file)
 			if ivfErr != nil {
 				panic(ivfErr)
 			}
@@ -85,20 +88,31 @@ func main() {
 
 			// Send our video file frame at a time. Pace our sending so we send it at the same speed it should be played back as.
 			// This isn't required since the video is timestamped, but we will such much higher loss if we send all at once.
-			sleepTime := time.Millisecond * time.Duration((float32(header.TimebaseNumerator)/float32(header.TimebaseDenominator))*1000)
+			// sleepTime := time.Millisecond * time.Duration((float32(header.TimebaseNumerator)/float32(header.TimebaseDenominator))*1000)
+			spsAndPpsCache := []byte{}
 			for {
-				frame, _, ivfErr := ivf.ParseNextFrame()
-				if ivfErr == io.EOF {
+				// frame, _, ivfErr := ivf.ParseNextFrame()
+				nal, h264Err := ivf.NextNAL()
+				if h264Err == io.EOF {
 					fmt.Printf("All video frames parsed and sent")
 					os.Exit(0)
 				}
 
-				if ivfErr != nil {
-					panic(ivfErr)
+				if h264Err != nil {
+					panic(h264Err)
 				}
 
-				time.Sleep(sleepTime)
-				if ivfErr = videoTrack.WriteSample(media.Sample{Data: frame, Duration: time.Second}); ivfErr != nil {
+				// time.Sleep(sleepTime)
+				time.Sleep(time.Millisecond * 33)
+				nal.Data = append([]byte{0x00, 0x00, 0x00, 0x01}, nal.Data...)
+				if nal.UnitType == h264reader.NalUnitTypeSPS || nal.UnitType == h264reader.NalUnitTypePPS {
+					spsAndPpsCache = append(spsAndPpsCache, nal.Data...)
+					continue
+				} else if nal.UnitType == h264reader.NalUnitTypeCodedSliceIdr {
+					nal.Data = append(spsAndPpsCache, nal.Data...)
+					spsAndPpsCache = []byte{}
+				}
+				if h264Err = videoTrack.WriteSample(media.Sample{Data: nal.Data, Duration: time.Second}); ivfErr != nil {
 					panic(ivfErr)
 				}
 			}
