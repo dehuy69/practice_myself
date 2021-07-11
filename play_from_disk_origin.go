@@ -10,15 +10,13 @@ import (
 	"github.com/pion/webrtc/v3"
 	"example.com/signal"
 	"github.com/pion/webrtc/v3/pkg/media"
-	// "github.com/pion/webrtc/v3/pkg/media/ivfreader"
+	"github.com/pion/webrtc/v3/pkg/media/ivfreader"
 	"github.com/pion/webrtc/v3/pkg/media/oggreader"
-	"github.com/pion/webrtc/v3/pkg/media/h264reader"
 )
 
 const (
 	audioFileName = "output.ogg"
-	// videoFileName = "output.ivf"
-	videoFileName = "stream_chn1.h264"
+	videoFileName = "output.ivf"
 )
 
 func main() {
@@ -44,11 +42,17 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	defer func() {
+		if cErr := peerConnection.Close(); cErr != nil {
+			fmt.Printf("cannot close peerConnection: %v\n", cErr)
+		}
+	}()
+
 	iceConnectedCtx, iceConnectedCtxCancel := context.WithCancel(context.Background())
 
 	if haveVideoFile {
 		// Create a video track
-		videoTrack, videoTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "pion")
+		videoTrack, videoTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "pion")
 		if videoTrackErr != nil {
 			panic(videoTrackErr)
 		}
@@ -77,8 +81,7 @@ func main() {
 				panic(ivfErr)
 			}
 
-			// ivf, header, ivfErr := ivfreader.NewWith(file)
-			h264, ivfErr := h264reader.NewReader(file)
+			ivf, header, ivfErr := ivfreader.NewWith(file)
 			if ivfErr != nil {
 				panic(ivfErr)
 			}
@@ -88,32 +91,21 @@ func main() {
 
 			// Send our video file frame at a time. Pace our sending so we send it at the same speed it should be played back as.
 			// This isn't required since the video is timestamped, but we will such much higher loss if we send all at once.
-			// sleepTime := time.Millisecond * time.Duration((float32(header.TimebaseNumerator)/float32(header.TimebaseDenominator))*1000)
-			spsAndPpsCache := []byte{}
+			sleepTime := time.Millisecond * time.Duration((float32(header.TimebaseNumerator)/float32(header.TimebaseDenominator))*1000)
+			fmt.Println(sleepTime)
 			for {
-				// frame, _, ivfErr := ivf.ParseNextFrame()
-				nal, h264Err := h264.NextNAL()
-				if h264Err == io.EOF {
+				frame, _, ivfErr := ivf.ParseNextFrame()
+				if ivfErr == io.EOF {
 					fmt.Printf("All video frames parsed and sent")
 					os.Exit(0)
 				}
 
-				if h264Err != nil {
-					panic(h264Err)
+				if ivfErr != nil {
+					panic(ivfErr)
 				}
 
-				// time.Sleep(sleepTime)
-				time.Sleep(time.Millisecond * 33)
-				nal.Data = append([]byte{0x00, 0x00, 0x00, 0x01}, nal.Data...)
-				if nal.UnitType == h264reader.NalUnitTypeSPS || nal.UnitType == h264reader.NalUnitTypePPS {
-					spsAndPpsCache = append(spsAndPpsCache, nal.Data...)
-					continue
-				} else if nal.UnitType == h264reader.NalUnitTypeCodedSliceIdr {
-					nal.Data = append(spsAndPpsCache, nal.Data...)
-					spsAndPpsCache = []byte{}
-				}
-				// fmt.Println(nal.Data)
-				if h264Err = videoTrack.WriteSample(media.Sample{Data: nal.Data, Duration: time.Second}); ivfErr != nil {
+				time.Sleep(sleepTime)
+				if ivfErr = videoTrack.WriteSample(media.Sample{Data: frame, Duration: time.Second}); ivfErr != nil {
 					panic(ivfErr)
 				}
 			}
@@ -122,7 +114,7 @@ func main() {
 
 	if haveAudioFile {
 		// Create a audio track
-		audioTrack, audioTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: "audio/opus"}, "audio", "pion")
+		audioTrack, audioTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
 		if audioTrackErr != nil {
 			panic(audioTrackErr)
 		}
@@ -193,6 +185,20 @@ func main() {
 		fmt.Printf("Connection State has changed %s \n", connectionState.String())
 		if connectionState == webrtc.ICEConnectionStateConnected {
 			iceConnectedCtxCancel()
+		}
+	})
+
+	// Set the handler for Peer connection state
+	// This will notify you when the peer has connected/disconnected
+	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		fmt.Printf("Peer Connection State has changed: %s\n", s.String())
+
+		if s == webrtc.PeerConnectionStateFailed {
+			// Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
+			// Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
+			// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
+			fmt.Println("Peer Connection has gone to failed exiting")
+			os.Exit(0)
 		}
 	})
 
