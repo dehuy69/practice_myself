@@ -1,18 +1,25 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	// "go/printer"
 	"io"
+	"log"
 	"os"
 	"time"
 
-	"github.com/pion/webrtc/v3"
+	// "container/list"
+
 	"example.com/signal"
+	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
+
 	// "github.com/pion/webrtc/v3/pkg/media/ivfreader"
 	"github.com/pion/webrtc/v3/pkg/media/oggreader"
-	"github.com/pion/webrtc/v3/pkg/media/h264reader"
+	// "github.com/pion/webrtc/v3/pkg/media/h264reader"
 )
 
 const (
@@ -32,6 +39,55 @@ func main() {
 	if !haveAudioFile && !haveVideoFile {
 		panic("Could not find `" + audioFileName + "` or `" + videoFileName + "`")
 	}
+
+
+	// Connect to FIFO pipe
+	GOP := []byte{}
+	sendGOP := []byte{}
+	go func ()  {
+		var pipeFile = "./MYFIFO"
+		const END = '\n'
+		fmt.Println("open a named pipe file for read.")
+		f, err := os.OpenFile(pipeFile, os.O_RDONLY, os.ModeNamedPipe)
+		if err != nil {
+			log.Panicln(err)
+		}
+		oneNAL := []byte{}
+		for {
+			b, _ := bufio.NewReader(f).ReadBytes(END)
+			// if err != nil {
+			// 	log.Panicln(err)
+			// 	// continue
+			// }
+
+			// case data only one charecter > pass out
+			if (len(b) < 2) {
+				continue
+			}
+			// drop last charecter \n
+			b = b[:len(b)-1]
+
+			// if not begin with 0001 > merge
+			// else send prev nal, then add new one
+			res := bytes.Compare(b[:3], []byte{0x00, 0x00, 0x00, 0x01})
+			if (res == 1) {
+				oneNAL = append(oneNAL, b...)
+				continue
+			} else {
+				// Add prev NAL to GOP
+				GOP = append(GOP, oneNAL...)
+				// fmt.Println("len gop: %v", len(GOP))
+				if (len(GOP) > 41000) {
+					sendGOP = GOP
+					GOP = []byte{}
+				}
+				// Add new data to begin a new NAL
+				oneNAL = b
+			}
+			// log.Printf("read : %v \n", nalData)		
+			// log.Println("")
+		}	
+	}()	
 
 	// Create a new RTCPeerConnection
 	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
@@ -71,17 +127,16 @@ func main() {
 		}()
 
 		go func() {
-			// Open a IVF file and start reading using our IVFReader
-			file, ivfErr := os.Open(videoFileName)
-			if ivfErr != nil {
-				panic(ivfErr)
-			}
+			// Open a h264 file and start reading using our IVFReader
+			// file, ivfErr := os.Open(videoFileName)
+			// if ivfErr != nil {
+			// 	panic(ivfErr)
+			// }
 
-			// ivf, header, ivfErr := ivfreader.NewWith(file)
-			h264, ivfErr := h264reader.NewReader(file)
-			if ivfErr != nil {
-				panic(ivfErr)
-			}
+			// h264, ivfErr := h264reader.NewReader(file)
+			// if ivfErr != nil {
+			// 	panic(ivfErr)
+			// }
 
 			// Wait for connection established
 			<-iceConnectedCtx.Done()
@@ -89,39 +144,40 @@ func main() {
 			// Send our video file frame at a time. Pace our sending so we send it at the same speed it should be played back as.
 			// This isn't required since the video is timestamped, but we will such much higher loss if we send all at once.
 			// sleepTime := time.Millisecond * time.Duration((float32(header.TimebaseNumerator)/float32(header.TimebaseDenominator))*1000)
-			spsAndPpsCache := []byte{}
+			
+			// spsAndPpsCache := []byte{}
 			for {
-				// frame, _, ivfErr := ivf.ParseNextFrame()
-				nal, h264Err := h264.NextNAL()
-				if h264Err == io.EOF {
-					fmt.Printf("All video frames parsed and sent")
-					os.Exit(0)
-				}
+				// nal, h264Err := h264.NextNAL()
+				// if h264Err == io.EOF {
+				// 	fmt.Printf("All video frames parsed and sent")
+				// 	os.Exit(0)
+				// }
 
-				if h264Err != nil {
-					panic(h264Err)
-				}
+				// if h264Err != nil {
+				// 	panic(h264Err)
+				// }
 
 				// time.Sleep(sleepTime)
-				time.Sleep(time.Millisecond * 33)
-				nal.Data = append([]byte{0x00, 0x00, 0x00, 0x01}, nal.Data...)
-				if nal.UnitType == h264reader.NalUnitTypeSPS || nal.UnitType == h264reader.NalUnitTypePPS {
-					spsAndPpsCache = append(spsAndPpsCache, nal.Data...)
-					fmt.Println("drop in 1")
-					fmt.Println(nal.Data)
-					continue
-				} else if nal.UnitType == h264reader.NalUnitTypeCodedSliceIdr {					
-					fmt.Println("drop in 2 before append")
-					fmt.Println(nal.Data)
-					nal.Data = append(spsAndPpsCache, nal.Data...)
-					fmt.Println("drop in 2 after append")
-					fmt.Println(nal.Data)
-					spsAndPpsCache = []byte{}
-				}
+				// time.Sleep(time.Millisecond * 33)
+				// nal.Data = append([]byte{0x00, 0x00, 0x00, 0x01}, nal.Data...)
+				// if nal.UnitType == h264reader.NalUnitTypeSPS || nal.UnitType == h264reader.NalUnitTypePPS {
+				// 	spsAndPpsCache = append(spsAndPpsCache, nal.Data...)
+				// 	continue
+				// } else if nal.UnitType == h264reader.NalUnitTypeCodedSliceIdr {
+				// 	nal.Data = append(spsAndPpsCache, nal.Data...)
+				// 	spsAndPpsCache = []byte{}
+				// }
 				// fmt.Println(nal.Data)
-				if h264Err = videoTrack.WriteSample(media.Sample{Data: nal.Data, Duration: time.Second}); ivfErr != nil {
-					panic(ivfErr)
+				if (len(sendGOP) == 0) {
+					
+					continue
 				}
+				fmt.Println(sendGOP)
+				videoTrack.WriteSample(media.Sample{Data: sendGOP, Duration: time.Second})
+				sendGOP = []byte{}
+				// if err = videoTrack.WriteSample(media.Sample{Data: nalData, Duration: time.Second}); err != nil {
+				// 	panic(err)
+				// }
 			}
 		}()
 	}

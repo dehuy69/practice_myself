@@ -8,6 +8,7 @@ import (
 )
 
 var pipeFile = "./MYFIFO"
+const END = '\n'
 
 func main() {
 	// os.Remove(pipeFile)
@@ -29,12 +30,16 @@ func main() {
 
 	for {
 		fmt.Println("waiting...")
-		b, err := bufio.NewReader(f).ReadBytes('\r')
+		b, err := bufio.NewReader(f).ReadBytes(END)
 		// b := bufio.NewScanner(f).Bytes()
 		if err != nil {
 			log.Panicln(err)
 			// continue
 		}
+		if (len(b) < 2) {
+			continue
+		} 
+		b = b[:len(b)-1]
 
 		log.Printf("read : %v \n", b)		
 		log.Println("")

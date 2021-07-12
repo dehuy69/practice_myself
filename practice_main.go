@@ -3,16 +3,23 @@ package main
 import (
 	"fmt"
 	"example.com/sub"
+	"time"
 )
 
 const s string = "constant"
 
-func submain() {
+func main() {
 	// fmt.Println("Go" + "lang")
 	// fmt.Println("1+1=", 1+1)
 	// fmt.Println("7/3=", 7/3)
 	// fmt.Println(true && false)
 	// fmt.Println(true || false)
+	go func() {
+        fmt.Println("goroutin 1")
+		go func ()  {
+			fmt.Println("goroutin 2")
+		}()
+    }()
 
 	var a = "initial"
 	fmt.Println(a)
@@ -22,8 +29,10 @@ func submain() {
 	fmt.Println(e)
 	f := "apple"
 	fmt.Println(f)
-	testimport()
+	// testimport()
 	sub.Testimport2()
-	controler_thread1 = 0
-	thread1()
+	time.Sleep(1 * time.Millisecond)
+	// controler_thread1 = 0
+	// thread1()
+
 }
