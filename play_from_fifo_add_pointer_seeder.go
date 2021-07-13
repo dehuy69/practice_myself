@@ -98,6 +98,8 @@ func main() {
 	// Seeding thread:
 	// Connect to FIFO pipe, continuos append,
 	h264FilePackets := []byte{}
+	p_h264FilePackets := &h264FilePackets
+
 	var pipeFile = "./MYFIFO"
 
 	// Wait for connection established
@@ -120,13 +122,13 @@ func main() {
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
-			fmt.Print("is seeding ", len(h264FilePackets))
+			fmt.Print("is seeding ", len(*p_h264FilePackets))
 			b, err := reader.ReadBytes(END)
 			if err != nil {
 				log.Panicln(err)
 				continue
 			}
-			h264FilePackets = append(h264FilePackets, b...)
+			*p_h264FilePackets = append(*p_h264FilePackets, b...)
 
 		}
 	}()
@@ -140,7 +142,7 @@ func main() {
 		for {
 			// create memory file base on h264File
 			// if len too small, wait until it larger
-			if len(h264FilePackets) < 1000 {
+			if len(*p_h264FilePackets) < 1000 {
 				continue
 			}
 			// Lock and process h264FilePackets, wait for thread above lock
@@ -161,26 +163,26 @@ func main() {
 				nextHeader, _ = reader.ReadBytes(END)
 				fmt.Print(nextHeader)
 				if len(nextHeader) <= 4 {
-					h264FilePackets = append(h264FilePackets, nextHeader...)
+					h264FilePackets = append(*p_h264FilePackets, nextHeader...)
 					continue
 				}
 				res := bytes.Compare(nextHeader[:5], []byte{0x00, 0x00, 0x00, 0x00, 0x01})
 				if res != 0 {
-					h264FilePackets = append(h264FilePackets, nextHeader...)
+					h264FilePackets = append(*p_h264FilePackets, nextHeader...)
 					continue
 				}
 				break // appear next header frame
 			}
 			//// -------------------FINISH process NEXT BEGIN ----------
 
-			h264File := bytes.NewReader(h264FilePackets)
+			h264File := bytes.NewReader(*p_h264FilePackets)
 			h264, ivfErr := h264reader.NewReader(h264File)
 			if ivfErr != nil {
 				panic(ivfErr)
 			}
 			// add nextFrame to public var h264FilePackets,
 			//[1:] because only 0 0 0 1 valid, and 0 0 0 0 1 is invalid 
-			h264FilePackets = nextHeader[1:]			
+			*p_h264FilePackets = nextHeader[1:]
 			isLock = 0 // unlock
 
 			spsAndPpsCache := []byte{} // serve logic loop below
@@ -188,17 +190,16 @@ func main() {
 				nal, h264Err := h264.NextNAL()
 				if h264Err == io.EOF {
 					fmt.Printf("All video frames parsed and sent")
-					runtime.GC()
 					break
 				} else if h264Err != nil {
 					log.Panicln(h264Err)
 					// Track file error
-					flog, _ := os.Create("panic.log")
-					defer flog.Close()
-					h264File.WriteTo(flog)
-					break
+					// flog, _ := os.Create("panic.log")
+					// defer flog.Close()
+					// h264File.WriteTo(flog)
+					os.Exit(0)
 				}
-				time.Sleep(time.Millisecond * 33)
+				time.Sleep(time.Millisecond * 25)
 				// fmt.Println(nal.Data)
 
 				nal.Data = append([]byte{0x00, 0x00, 0x00, 0x01}, nal.Data...)

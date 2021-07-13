@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 )
 
 var pipeFile = "./MYFIFO"
@@ -30,6 +31,7 @@ func main() {
 
 	for {
 		fmt.Println("waiting...")
+		time.Sleep(500 * time.Millisecond)
 		b, err := bufio.NewReader(f).ReadBytes(END)
 		// b := bufio.NewScanner(f).Bytes()
 		if err != nil {
