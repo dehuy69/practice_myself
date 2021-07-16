@@ -18,7 +18,7 @@ import (
 const (
 	audioFileName = "output.ogg"
 	// videoFileName = "output.ivf"
-	videoFileName = "stream_chn1.h264"
+	videoFileName = "stream_chn0.h264"
 )
 
 func main() {
