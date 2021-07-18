@@ -1,0 +1,251 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+
+	// "io/ioutil"
+	"log"
+	"os"
+	"time"
+
+	"example.com/signal"
+	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v3/pkg/media"
+	"github.com/pion/webrtc/v3/pkg/media/h264reader"
+)
+
+func headerLocate(h264FilePackets []byte) (int, int){
+	firstHeaderLocation := 0
+	lastHeaderLocation := 0
+	// Find first header  0 0 0 0 1 or 0 0 0 1
+	for i := 0; i < len(h264FilePackets); i++ {
+		if h264FilePackets[i] == 0 {
+			res := bytes.Compare(h264FilePackets[i:i+5], []byte{0x00, 0x00, 0x00, 0x00, 0x01})
+			res2 := bytes.Compare(h264FilePackets[i:i+4], []byte{0x00, 0x00, 0x00, 0x01})
+			// Found header
+			if res == 0 || res2 == 0 {
+				firstHeaderLocation = i
+				break
+			}
+		}
+	}
+
+	// Find last header  0 0 0 0 1 or 0 0 0 1
+	for i := len(h264FilePackets) - 4; i >= 0; i-- {
+		// Found header. Find 0001 first, if appear then check 00001
+		if h264FilePackets[i] == 0 {
+			res2 := bytes.Compare(h264FilePackets[i:i+4], []byte{0x00, 0x00, 0x00, 0x01})
+			if res2 == 0 {
+				res := bytes.Compare(h264FilePackets[i-1:i+4], []byte{0x00, 0x00, 0x00, 0x00, 0x01})				
+				if res == 0 {lastHeaderLocation = i-1} else {lastHeaderLocation = i}
+				break
+			}
+		}
+	}
+	return firstHeaderLocation, lastHeaderLocation
+}
+func main() {
+	// Create a new RTCPeerConnection
+	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
+		ICEServers: []webrtc.ICEServer{
+			{
+				URLs: []string{"stun:stun.l.google.com:19302"},
+			},
+			{
+				URLs:           []string{"turn:aivisvn.ddns.net:3478?transport=udp"},
+				Username:       "test",
+				Credential:     "test",
+				CredentialType: webrtc.ICECredentialTypePassword,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	iceConnectedCtx, iceConnectedCtxCancel := context.WithCancel(context.Background())
+
+	// Create a video track
+	videoTrack, videoTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "pion")
+	if videoTrackErr != nil {
+		panic(videoTrackErr)
+	}
+
+	rtpSender, videoTrackErr := peerConnection.AddTrack(videoTrack)
+	if videoTrackErr != nil {
+		panic(videoTrackErr)
+	}
+
+	// Read incoming RTCP packets
+	// Before these packets are returned they are processed by interceptors. For things
+	// like NACK this needs to be called.
+	go func() {
+		rtcpBuf := make([]byte, 1500)
+		for {
+			if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
+				return
+			}
+		}
+	}()
+
+	// Set the handler for ICE connection state
+	// This will notify you when the peer has connected/disconnected
+	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
+		fmt.Printf("Connection State has changed %s \n", connectionState.String())
+		if connectionState == webrtc.ICEConnectionStateConnected {
+			iceConnectedCtxCancel()
+		}
+	})
+
+	// Wait for the offer to be pasted
+	offer := webrtc.SessionDescription{}
+	signal.Decode(signal.MustReadStdin(), &offer)
+
+	// Set the remote SessionDescription
+	if err = peerConnection.SetRemoteDescription(offer); err != nil {
+		panic(err)
+	}
+
+	// Create answer
+	answer, err := peerConnection.CreateAnswer(nil)
+	if err != nil {
+		panic(err)
+	}
+	// Create channel that is blocked until ICE Gathering is complete
+	gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
+
+	// Sets the LocalDescription, and starts our UDP listeners
+	if err = peerConnection.SetLocalDescription(answer); err != nil {
+		panic(err)
+	}
+
+	// Block until ICE Gathering is complete, disabling trickle ICE
+	// we do this because we only can exchange one signaling message
+	// in a production application you should exchange ICE Candidates via OnICECandidate
+	<-gatherComplete
+
+	// Output the answer in base64 so we can paste it in browser
+	fmt.Println(signal.Encode(*peerConnection.LocalDescription()))
+
+	// Seeding thread:
+	// Connect to FIFO pipe, continuos append,
+	buffer := []byte{}
+	var pipeFile = "./MYFIFO"
+
+	// Wait for connection established
+	<-iceConnectedCtx.Done()
+
+	fmt.Println("open a named pipe file for read.")
+	VIDEO_STREAM_PIPE, err := os.OpenFile(pipeFile, os.O_RDONLY, os.ModeNamedPipe)
+	if err != nil {
+		log.Panicln(err)
+	}
+	defer VIDEO_STREAM_PIPE.Close()
+	reader := bufio.NewReader(VIDEO_STREAM_PIPE)
+	const END = '\n'
+	isLock := 0 // unlock at at begin
+	go func() {
+		// buffer := []byte{}
+		for {
+			if isLock == 1 {
+				fmt.Print("lockr")
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			// In nhieu qua, ko thay chu
+			if len(buffer) > 300000 {
+				fmt.Print("is seeding ", len(buffer))
+			}
+			b, err := reader.ReadBytes(END)
+			if err != nil {
+				log.Panicln(err)
+				continue
+			}
+			// check if h.buffer over 500kb, remove old
+			// if len(buffer) > 500000 {
+			// 	buffer = buffer[len(b):]
+			// }
+			buffer = append(buffer, b...)
+
+		}
+	}()
+
+	// THREAD 2
+	// Lock seed, then get data from h264FilePackets, empty h264FilePackets, then unlock
+	go func() {
+		// Wait for connection established
+		<-iceConnectedCtx.Done()
+		time.Sleep(100 * time.Millisecond) // start after seed thread above
+		for {
+			// if len too small, wait until it larger
+			if len(buffer) < 1000 {
+				continue
+			}
+
+			// Locate header in buffer
+			firstHeaderLocation, lastHeaderLocation := headerLocate(buffer)
+
+			isLock = 1
+			time.Sleep(5 * time.Millisecond)
+			h264FilePackets := buffer[firstHeaderLocation:lastHeaderLocation]
+			buffer = buffer[lastHeaderLocation:]
+			isLock = 0 // unlock
+
+
+			//// -------------------FINISH process NEXT BEGIN ----------
+
+			// fmt.Println(h264FilePackets)
+			// f264, _ := os.OpenFile("h264File.h264",
+			// 	os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			// defer f264.Close()
+			// f264.Write(h264FilePackets)
+			fmt.Println("make memory file from packet len: ", len(h264FilePackets))
+			// fmt.Println(h264FilePackets)
+
+			// Check begin header
+			//[1:] because only 0 0 0 1 valid, and 0 0 0 0 1 is invalid 
+			res := bytes.Compare(h264FilePackets[:5], []byte{0x00, 0x00, 0x00, 0x00, 0x01})
+			if res == 0 {h264FilePackets = h264FilePackets[1:]}
+
+			h264File := bytes.NewReader(h264FilePackets)
+			h264, ivfErr := h264reader.NewReader(h264File)
+			if ivfErr != nil {
+				panic(ivfErr)
+			}
+
+			spsAndPpsCache := []byte{} // serve logic loop below
+			for {
+				nal, h264Err := h264.NextNAL()
+				if h264Err == io.EOF {
+					log.Println("All video frames parsed and sent")
+					// runtime.GC()
+					break
+				} else if h264Err != nil {
+					log.Panicln(h264Err)
+					break
+				}
+
+				// fmt.Println(nal.Data)
+
+				nal.Data = append([]byte{0x00, 0x00, 0x00, 0x01}, nal.Data...)
+				if nal.UnitType == h264reader.NalUnitTypeSPS || nal.UnitType == h264reader.NalUnitTypePPS {
+					spsAndPpsCache = append(spsAndPpsCache, nal.Data...)
+					continue
+				} else if nal.UnitType == h264reader.NalUnitTypeCodedSliceIdr {
+					nal.Data = append(spsAndPpsCache, nal.Data...)
+					spsAndPpsCache = []byte{}
+				}
+				if h264Err = videoTrack.WriteSample(media.Sample{Data: nal.Data, Duration: time.Second}); ivfErr != nil {
+					panic(ivfErr)
+				}
+				time.Sleep(time.Millisecond * 33)
+			}
+		}
+	}()
+
+	// Block forever
+	select {}
+}
