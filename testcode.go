@@ -2,7 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"strings"
+	"os/exec"
 )
 
 func headerLocate(h264FilePackets []byte) (int, int){
@@ -42,8 +47,41 @@ func headerLocate(h264FilePackets []byte) (int, int){
 	return firstHeaderLocation, lastHeaderLocation
 }
 
+func jsontest() {
+	// jsonMenu := {"Name": "Ed", "Text": "Knock knock."}
+	jsonStream := `{"MenuName":"sendVideo", "Param":"h264.mp4"}`
+	// fmt.Print(jsonStream)
+	type Request struct {
+		MenuName, Param string
+	}
+	dec := json.NewDecoder(strings.NewReader(jsonStream))
+	for {
+		var m Request
+		if err := dec.Decode(&m); err == io.EOF {
+			// log.Fatal(err)
+			break
+		} else if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("%s: %s\n", m.MenuName, m.Param)
+	}
+}
+
+
+func testexec() {
+
+    cmd := exec.Command("firefox")
+
+    err := cmd.Run()
+
+    if err != nil {
+        log.Fatal(err)
+    }
+}
 func main() {
-	primes := []byte{0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00, 0x01, 0x02}
-	res1, res2 := headerLocate(primes)
-	fmt.Println(res1, res2)
+	// testexec()
+	prevB := []byte{}
+	res := bytes.Compare(prevB, []byte{})
+	fmt.Print(res)
+	fmt.Print([]byte("\n"))
 }

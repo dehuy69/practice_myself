@@ -4,11 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
-	"runtime"
-
-	// "io/ioutil"
+	"io/ioutil"
 	"log"
 	"os"
 	"time"
@@ -20,11 +19,29 @@ import (
 )
 
 func main() {
+	// Open MP4 file on disk.
+	f, _ := os.Open("./h264.mp4")
+	// Read entire mp4 into byte slice.
+	freader := bufio.NewReader(f)
+	content, _ := ioutil.ReadAll(freader)
+	// Encode as base64.
+	encoded := base64.StdEncoding.EncodeToString(content)
+	f.Close()
+	content = []byte{}
+
+	// fmt.Println("len base64 mp4: ", len(encoded))
+
 	// Create a new RTCPeerConnection
 	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
 			{
 				URLs: []string{"stun:stun.l.google.com:19302"},
+			},
+			{
+				URLs:           []string{"turn:aivisvn.ddns.net:3478?transport=udp"},
+				Username:       "test",
+				Credential:     "test",
+				CredentialType: webrtc.ICECredentialTypePassword,
 			},
 		},
 	})
@@ -97,8 +114,8 @@ func main() {
 
 	// Seeding thread:
 	// Connect to FIFO pipe, continuos append,
-	h264FilePackets := []byte{}
-	var pipeFile = "./H264PIPE"
+	buffer := []byte{}
+	var pipeFile = "./MYFIFO"
 
 	// Wait for connection established
 	<-iceConnectedCtx.Done()
@@ -113,20 +130,27 @@ func main() {
 	const END = '\n'
 	isLock := 0 // unlock at at begin
 	go func() {
-
+		// buffer := []byte{}
 		for {
 			if isLock == 1 {
 				fmt.Print("lockr")
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
-			fmt.Print("is seeding ", len(h264FilePackets))
+			// In nhieu qua, ko thay chu
+			if len(buffer) > 300000 {
+				fmt.Print("is seeding ", len(buffer))
+			}
 			b, err := reader.ReadBytes(END)
 			if err != nil {
 				log.Panicln(err)
 				continue
 			}
-			h264FilePackets = append(h264FilePackets, b...)
+			// check if h.buffer over 500kb, remove old
+			if len(buffer) > 500000 {
+				buffer = buffer[len(b):]
+			}
+			buffer = append(buffer, b...)
 
 		}
 	}()
@@ -136,69 +160,61 @@ func main() {
 	go func() {
 		// Wait for connection established
 		<-iceConnectedCtx.Done()
-		time.Sleep(1000 * time.Millisecond) // start after seed thread above
+		time.Sleep(100 * time.Millisecond) // start after seed thread above
 		for {
 			// create memory file base on h264File
-			// if len too small, wait until it larger
-			if len(h264FilePackets) < 1000 {
-				continue
-			}
-			// Lock and process h264FilePackets, wait for thread above lock
-			isLock = 1
-			time.Sleep(10 * time.Millisecond)
+			// h264FilePackets := []byte{}
+			// Lock and copy to h264FilePackets, wait for thread above lock
 
-			// if packet does not begin with 00 00 00 01 , then seek to header, take data from that seek
-			// res := bytes.Compare(h264FilePackets[:3], []byte{0x00, 0x00, 0x00, 0x01})
-			// if res != 0 {
-			// 	h264FilePackets = append([]byte{0x00, 0x00, 0x00, 0x01}, h264FilePackets...)
-			// }
+			// isLock = 1
+			// time.Sleep(5 * time.Millisecond)
+			h264FilePackets := buffer
+			buffer = []byte{}
+			// isLock = 0 // unlock
 
-			// Get next packet in named pipe until next begin file header 00 00 00 01
-			fmt.Println("GET next packet")
-			reader = bufio.NewReader(VIDEO_STREAM_PIPE)
-			nextHeader := []byte{}
-			for {
-				nextHeader, _ = reader.ReadBytes(END)
-				fmt.Print(nextHeader)
-				if len(nextHeader) <= 4 {
-					h264FilePackets = append(h264FilePackets, nextHeader...)
-					continue
+			// Drop until find next header  0 0 0 0 1 or 0 0 0 1
+			for i := 0; i < len(h264FilePackets); i++ {
+				if h264FilePackets[i] == 0 {
+					res := bytes.Compare(h264FilePackets[i:i+5], []byte{0x00, 0x00, 0x00, 0x00, 0x01})
+					res2 := bytes.Compare(h264FilePackets[i:i+4], []byte{0x00, 0x00, 0x00, 0x01})
+					// Found header
+					if res == 0 || res2 == 0 {
+						h264FilePackets = h264FilePackets[i:]
+						if res == 0 {
+							//[1:] because only 0 0 0 1 valid, and 0 0 0 0 1 is invalid
+							h264FilePackets = h264FilePackets[1:]
+						}
+						break
+					}
 				}
-				res := bytes.Compare(nextHeader[:5], []byte{0x00, 0x00, 0x00, 0x00, 0x01})
-				if res != 0 {
-					h264FilePackets = append(h264FilePackets, nextHeader...)
-					continue
-				}
-				break // appear next header frame
 			}
+
 			//// -------------------FINISH process NEXT BEGIN ----------
 
+			// fmt.Println(h264FilePackets)
+			// f264, _ := os.OpenFile("h264File.h264",
+			// 	os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			// defer f264.Close()
+			// f264.Write(h264FilePackets)
+			fmt.Println("make memory file from packet len: ", len(h264FilePackets))
 			h264File := bytes.NewReader(h264FilePackets)
 			h264, ivfErr := h264reader.NewReader(h264File)
 			if ivfErr != nil {
 				panic(ivfErr)
 			}
-			// add nextFrame to public var h264FilePackets,
-			//[1:] because only 0 0 0 1 valid, and 0 0 0 0 1 is invalid 
-			h264FilePackets = nextHeader[1:]			
-			isLock = 0 // unlock
 
 			spsAndPpsCache := []byte{} // serve logic loop below
 			for {
 				nal, h264Err := h264.NextNAL()
 				if h264Err == io.EOF {
-					fmt.Printf("All video frames parsed and sent")
-					runtime.GC()
+					log.Println("All video frames parsed and sent")
+					// runtime.GC()
 					break
 				} else if h264Err != nil {
 					log.Panicln(h264Err)
-					// Track file error
-					flog, _ := os.Create("panic.log")
-					defer flog.Close()
-					h264File.WriteTo(flog)
 					break
 				}
-				time.Sleep(time.Millisecond * 33)
+
 				// fmt.Println(nal.Data)
 
 				nal.Data = append([]byte{0x00, 0x00, 0x00, 0x01}, nal.Data...)
@@ -212,9 +228,43 @@ func main() {
 				if h264Err = videoTrack.WriteSample(media.Sample{Data: nal.Data, Duration: time.Second}); ivfErr != nil {
 					panic(ivfErr)
 				}
+				time.Sleep(time.Millisecond * 33)
 			}
 		}
 	}()
+
+	// Register data channel creation handling
+	peerConnection.OnDataChannel(func(d *webrtc.DataChannel) {
+		fmt.Printf("New DataChannel %s %d\n", d.Label(), d.ID())
+
+		// Register channel opening handling
+		d.OnOpen(func() {
+			fmt.Printf("Data channel '%s'-'%d' open. Random messages will now be sent to any connected DataChannels every 5 seconds\n", d.Label(), d.ID())
+			// Send the message as text
+			sendErr := d.SendText("data:video/mp4;base64,")
+			if sendErr != nil {
+				panic(sendErr)
+			}
+			for i := 0; i <= len(encoded); i = i + 65535 {
+				// Send the message as text
+				if i < len(encoded)-65535 {
+					d.SendText(encoded[i : i+65535])
+				} else {
+					d.SendText(encoded[i:])
+				}
+			}
+			sendErr = d.SendText("\n")
+			encoded = ""
+			if sendErr != nil {
+				panic(sendErr)
+			}
+		})
+
+		// Register text message handling
+		d.OnMessage(func(msg webrtc.DataChannelMessage) {
+			fmt.Printf("Message from DataChannel '%s': '%s'\n", d.Label(), string(msg.Data))
+		})
+	})
 
 	// Block forever
 	select {}
